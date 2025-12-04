@@ -1,4 +1,4 @@
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Deserializer, Serializer};
 
 /// Serializes a byte slice to a base64-encoded string for serde.

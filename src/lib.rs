@@ -11,7 +11,7 @@ pub use process_macro::UDFProcessor;
 pub use request::{AthenaUDFRequest, Identity, InputRecords, OutputSchemaWrapper, PingRequest};
 pub use response::{AthenaResponse, AthenaUDFResponse, OutputRecords, PingResponse};
 
-pub use lambda_runtime::{LambdaEvent, run, service_fn};
+pub use lambda_runtime::{run, service_fn, LambdaEvent};
 pub use serde::{Deserialize, Serialize};
 pub use serde_json::Value;
 
