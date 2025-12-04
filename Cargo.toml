@@ -2,7 +2,7 @@
 name = "athena-udf"
 version = "0.1.0"
 edition = "2021"
-authors = ["Matthias Queitsch <matthias.queitsch@unite.eu"]
+authors = ["Matthias Queitsch <matthias.queitsch@unite.eu>"]
 description = "A crate for building AWS Athena User Defined Functions in Rust"
 license = "MIT"
 keywords = ["athena", "aws", "udf", "lambda", "arrow"]
