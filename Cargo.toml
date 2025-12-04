@@ -1,13 +1,16 @@
 [package]
 name = "athena-udf"
 version = "0.1.0"
-edition = "2024"
-authors = ["Matthias Queitsch<matthias.queitsch@unite.eu"]
+edition = "2021"
+authors = ["Matthias Queitsch <matthias.queitsch@unite.eu"]
 description = "A crate for building AWS Athena User Defined Functions in Rust"
 license = "MIT"
 keywords = ["athena", "aws", "udf", "lambda", "arrow"]
 categories = ["database"]
 rust-version = "1.85.1"
+homepage = "https://github.com/matthias-Q/athena-udf"
+repository = "https://github.com/matthias-Q/athena-udf"
+readme = "README.md"
 
 [dependencies]
 lambda_runtime = "1.0.1"
