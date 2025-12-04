@@ -1,5 +1,9 @@
 # athena-udf
 
+[![CI](https://github.com/matthias-Q/athena-udf/actions/workflows/ci.yml/badge.svg)](https://github.com/matthias-Q/athena-udf/actions/workflows/ci.yml)
+[![Publish to
+crates.io](https://github.com/matthias-Q/athena-udf/actions/workflows/publish.yml/badge.svg)](https://github.com/matthias-Q/athena-udf/actions/workflows/publish.yml)
+
 A Rust crate for building AWS Athena User Defined Functions (UDFs) using AWS
 Lambda and Apache Arrow.
 
