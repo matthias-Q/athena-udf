@@ -146,7 +146,7 @@ pub fn string_reverse_nullable(value: String) -> Option<String> {
 
 ## Thanks
 
-This project was develop while working at [Unite](www.unite.eu) .
+This project was develop while working at [Unite](https://www.unite.eu) .
 
 ## License
 
