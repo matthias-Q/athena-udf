@@ -308,9 +308,8 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(input_array)]).unwrap();
 
         let processor = UDFProcessor::new(&batch);
-        let result = processor.process_unary::<String, Option<i64>, _>("output", |s| {
-            s.parse::<i64>().ok()
-        });
+        let result =
+            processor.process_unary::<String, Option<i64>, _>("output", |s| s.parse::<i64>().ok());
 
         assert!(result.is_ok());
         let output_batch = result.unwrap();
