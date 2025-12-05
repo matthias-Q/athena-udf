@@ -5,3 +5,4 @@ push = true
 publish = false
 
 pre-release-commit-message = "chore: release"
+tag-name = "v{{version}}"
