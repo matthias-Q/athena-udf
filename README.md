@@ -75,7 +75,7 @@ Deploy:
 cargo lambda deploy
 ```
 
-### 4. Use in Athena
+### 3. Use in Athena
 
 ```sql
 USING EXTERNAL FUNCTION string_reverse(input VARCHAR) RETURNS VARCHAR
