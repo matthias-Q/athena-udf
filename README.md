@@ -92,7 +92,7 @@ SELECT string_reverse('hello-athena') as reversed;
 
 ## Examples
 
-### [Simple UDF Example](examples/simple-udf) (Recommended)
+### [Simple UDF Example](https://github.com/matthias-Q/athena-udf/tree/main/examples/simple-udf) (Recommended)
 
 Uses the `athena_udf_handler!` macro for minimal boilerplate:
 - Multiple UDF implementations (unary, binary, ternary functions)
@@ -100,7 +100,7 @@ Uses the `athena_udf_handler!` macro for minimal boilerplate:
 - Explicit null handling with `Option<T>`
 - Deployment instructions
 
-### [Manual UDF Example](examples/manual-udf)
+### [Manual UDF Example](https://github.com/matthias-Q/athena-udf/tree/main/examples/manual-udf)
 
 Manual implementation without macros for full control:
 - Same UDF implementations as simple-udf
