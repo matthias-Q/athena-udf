@@ -1,6 +1,6 @@
 [package]
 name = "athena-udf"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Matthias Queitsch <matthias.queitsch@unite.eu>"]
 description = "A crate for building AWS Athena User Defined Functions in Rust"

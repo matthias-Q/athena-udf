@@ -3,7 +3,7 @@ members = ["athena-udf", "examples/simple-udf", "examples/manual-udf"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["Matthias Queitsch <matthias.queitsch@unite.eu>"]
 license = "MIT"
