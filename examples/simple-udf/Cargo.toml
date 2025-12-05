@@ -1,0 +1,15 @@
+[package]
+name = "simple-udf"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+athena-udf = { path = "../../athena-udf" }
+lambda_runtime = "1.0.1"
+serde_json = "1.0"
+tokio = { version = "1", features = ["macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

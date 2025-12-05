@@ -24,6 +24,10 @@ tracing-subscriber = "0.3"
 
 ### 1. Create your Lambda handler
 
+We provide a simple macro to generate the Lambda function. Use
+`athena_udf_handler!` and register the UDFs in there with the name and the
+type.
+
 ```rust
 use athena_udf::*;
 use lambda_runtime::{service_fn, run, LambdaEvent, Error};
@@ -39,16 +43,9 @@ pub fn add_numbers(a: i64, b: i64) -> i64 {
     a + b
 }
 
-async fn function_handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
-    handle_athena_request(event, |input_batch, method_name, output_col_name| {
-        match method_name {
-            "string_reverse" => UDFProcessor::new(input_batch)
-                .process_unary::<String, String, _>(output_col_name, string_reverse),
-            "add_numbers" => UDFProcessor::new(input_batch)
-                .process_binary::<i64, i64, i64, _>(output_col_name, add_numbers),
-            _ => Err(format!("Unknown function: {}", method_name).into()),
-        }
-    }).await
+athena_udf_handler! {
+    "string_reverse" => string_reverse: (String) -> String,
+    "add_numbers" => add_numbers: (i64, i64) -> i64,
 }
 
 #[tokio::main]
@@ -60,6 +57,14 @@ async fn main() -> Result<(), Error> {
     run(service_fn(function_handler)).await
 }
 ```
+
+The `athena_udf_handler!` macro generates the complete `async fn function_handler` for you. It:
+- Automatically determines the function arity (unary, binary, ternary, etc.) from the type signature
+- Selects the correct `process_*` method
+- Handles all type conversions between Athena and Rust types
+- Provides error handling for unknown functions
+
+For more control, you can use the lower-level `register_udfs!` macro or manually implement the handler.
 
 ### 2. Deploy to AWS Lambda
 
@@ -84,6 +89,26 @@ LAMBDA 'your-lambda-function-name'
 SELECT string_reverse('hello-athena') as reversed;
 -- Result: 'anehta-olleh'
 ```
+
+## Examples
+
+### [Simple UDF Example](examples/simple-udf) (Recommended)
+
+Uses the `athena_udf_handler!` macro for minimal boilerplate:
+- Multiple UDF implementations (unary, binary, ternary functions)
+- Clean, concise syntax
+- Explicit null handling with `Option<T>`
+- Deployment instructions
+
+### [Manual UDF Example](examples/manual-udf)
+
+Manual implementation without macros for full control:
+- Same UDF implementations as simple-udf
+- Custom logging and error handling
+- Explicit type parameters
+- Useful when you need preprocessing or performance monitoring
+
+Both examples demonstrate the same functionality - choose based on your needs for control vs. simplicity.
 
 ## Supported Types
 
