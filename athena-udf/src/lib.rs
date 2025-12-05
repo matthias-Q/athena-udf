@@ -1,5 +1,6 @@
 pub mod arrow_conversions;
 pub mod process_macro;
+pub mod register_macro;
 pub mod request;
 pub mod response;
 pub mod serde_base64;
