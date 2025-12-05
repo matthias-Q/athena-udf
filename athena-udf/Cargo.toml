@@ -10,7 +10,7 @@ categories = ["database"]
 rust-version = "1.85.1"
 homepage = "https://github.com/matthias-Q/athena-udf"
 repository = "https://github.com/matthias-Q/athena-udf"
-readme = "README.md"
+readme = "../README.md"
 
 [dependencies]
 lambda_runtime = "1.0.1"
