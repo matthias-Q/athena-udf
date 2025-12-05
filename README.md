@@ -17,14 +17,17 @@ athena-udf = "0.1.0"
 lambda_runtime = "0.13"
 tokio = { version = "1", features = ["macros"] }
 serde_json = "1.0"
+tracing-subscriber = "0.3"
 ```
 
 ## Quick Start
 
-### 1. Define your UDF functions
+### 1. Create your Lambda handler
 
 ```rust
-// functions.rs
+use athena_udf::*;
+use lambda_runtime::{service_fn, run, LambdaEvent, Error};
+use serde_json::Value;
 
 /// SQL: USING EXTERNAL FUNCTION string_reverse(input VARCHAR) RETURNS VARCHAR
 pub fn string_reverse(value: String) -> String {
@@ -36,28 +39,12 @@ pub fn add_numbers(a: i64, b: i64) -> i64 {
     a + b
 }
 
-/// SQL: USING EXTERNAL FUNCTION concat_three(a VARCHAR, b VARCHAR, c VARCHAR) RETURNS VARCHAR
-pub fn concat_three(a: String, b: String, c: String) -> String {
-    format!("{}{}{}", a, b, c)
-}
-```
-
-### 2. Create your Lambda handler
-
-```rust
-use athena_udf::*;
-use lambda_runtime::{service_fn, run, LambdaEvent, Error};
-use serde_json::Value;
-
-mod functions;
-use functions::*;
-
 async fn function_handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
     handle_athena_request(event, |input_batch, method_name, output_col_name| {
         match method_name {
-            "string_reverse" => UdfProcessor::new(input_batch)
+            "string_reverse" => UDFProcessor::new(input_batch)
                 .process_unary::<String, String, _>(output_col_name, string_reverse),
-            "add_numbers" => UdfProcessor::new(input_batch)
+            "add_numbers" => UDFProcessor::new(input_batch)
                 .process_binary::<i64, i64, i64, _>(output_col_name, add_numbers),
             _ => Err(format!("Unknown function: {}", method_name).into()),
         }
@@ -74,7 +61,7 @@ async fn main() -> Result<(), Error> {
 }
 ```
 
-### 3. Deploy to AWS Lambda
+### 2. Deploy to AWS Lambda
 
 Build for Lambda (Amazon Linux 2):
 
