@@ -830,7 +830,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "manual-udf"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "athena-udf",
  "lambda_runtime",
@@ -1109,7 +1109,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-udf"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "athena-udf",
  "lambda_runtime",
