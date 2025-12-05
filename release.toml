@@ -1,0 +1,8 @@
+# release.toml
+sign-commit = true
+sign-tag = true
+push = true
+publish = false
+
+pre-release-commit-message = "chore: release {{version}}"
+tag-message = "Release {{version}}"
