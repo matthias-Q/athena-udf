@@ -5,4 +5,4 @@ lint:
 test:
     cargo nextest run --nocapture
 publish TYPE="patch" *FLAGS:
-    cargo release {{TYPE}} --package athena-udf {{FLAGS}}
+    cargo release {{TYPE}} --package athena-udf --exclude simple-udf --exclude manual-udf {{FLAGS}}

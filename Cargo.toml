@@ -1,5 +1,5 @@
 [workspace]
-members = ["athena-udf", "examples/simple-udf", "examples/manual-udf"]
+members = ["athena-udf"]
 resolver = "2"
 
 [workspace.package]
