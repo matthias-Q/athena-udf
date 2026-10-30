@@ -13,12 +13,13 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-athena-udf = "0.1.0"
-lambda_runtime = "0.13"
-tokio = { version = "1", features = ["macros"] }
-serde_json = "1.0"
+athena-udf = "0.3"
+lambda_runtime = "1.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = "0.3"
 ```
+
+The crate requires Rust 1.88 or newer.
 
 ## Quick Start
 
@@ -30,8 +31,7 @@ type.
 
 ```rust
 use athena_udf::*;
-use lambda_runtime::{service_fn, run, LambdaEvent, Error};
-use serde_json::Value;
+use lambda_runtime::{service_fn, run, Error};
 
 /// SQL: USING EXTERNAL FUNCTION string_reverse(input VARCHAR) RETURNS VARCHAR
 pub fn string_reverse(value: String) -> String {
@@ -90,6 +90,11 @@ SELECT string_reverse('hello-athena') as reversed;
 -- Result: 'anehta-olleh'
 ```
 
+Athena invokes the function with its own IAM role. The crate reads the
+`identity` block but does not authorize it. Do not expose the function through a
+public function URL or an unauthenticated API Gateway route, or any caller can
+run your UDF and read its results.
+
 ## Examples
 
 ### [Simple UDF Example](https://github.com/matthias-Q/athena-udf/tree/main/examples/simple-udf) (Recommended)
@@ -123,6 +128,51 @@ types:
 | DOUBLE          | f64       |
 | BOOLEAN         | bool      |
 | VARBINARY       | Vec<u8>   |
+| ROW(...)        | `StructValue` |
+
+Every type is available as `Option<T>` for explicit null handling.
+
+## Struct Values
+
+A `ROW(...)` column arrives as an Arrow struct. Use `StructValue` to read its
+fields and to build a new one:
+
+```rust
+use athena_udf::{ScalarValue, StructValue};
+
+/// SQL: USING EXTERNAL FUNCTION label(r ROW(name VARCHAR, size BIGINT)) RETURNS VARCHAR
+pub fn label(row: StructValue) -> String {
+    let name = match row.get("name") {
+        Some(ScalarValue::String(name)) => name.as_str(),
+        _ => "unknown",
+    };
+    let size = match row.get("size") {
+        Some(ScalarValue::Int64(size)) => *size,
+        _ => 0,
+    };
+    format!("{name} ({size})")
+}
+
+/// SQL: USING EXTERNAL FUNCTION to_row(value VARCHAR) RETURNS ROW(value VARCHAR, length BIGINT)
+pub fn to_row(value: String) -> StructValue {
+    StructValue::new([
+        ("value", value.clone().into()),
+        ("length", ScalarValue::Int64(value.len() as i64)),
+    ])
+}
+
+athena_udf_handler! {
+    "label" => label: (StructValue) -> String,
+    "to_row" => to_row: (String) -> StructValue,
+}
+```
+
+The output column is built from the `ROW` type that Athena declares, so field
+names and field types in the response always match the SQL signature. A struct
+value that is missing a declared field is rejected with an error.
+
+`ScalarValue` supports the same types as the table above, including nested
+structs. `ScalarValue::Null` marks a null field inside a row.
 
 ## Null Handling
 
@@ -147,13 +197,16 @@ Use `Option<T>` to explicitly handle nulls:
 
 ```rust
 pub fn string_reverse_nullable(value: String) -> Option<String> {
-    if value.length() > 3 {
+    if value.len() > 3 {
         Some(value)
     } else {
         None
     }
 }
 ```
+
+A row is never dropped. A null input, or a `None` output, produces a null in
+the result column at the same position.
 
 
 ## Thanks
@@ -162,6 +215,6 @@ This project was develop while working at [Unite](https://www.unite.eu) .
 
 ## License
 
-Licensed under MIT license ([LICENSE-MIT](LICENSE-MIT)
-http://opensource.org/licenses/MIT)
+Licensed under the MIT license ([LICENSE](LICENSE)
+https://opensource.org/licenses/MIT)
 
