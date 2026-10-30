@@ -77,6 +77,16 @@ pub(crate) fn expect_type(expected: DataType, field_type: &DataType) -> Result<(
     }
 }
 
+pub(crate) fn check_bounds(len: usize, index: usize) -> Result<(), ArrowError> {
+    if index < len {
+        Ok(())
+    } else {
+        Err(ArrowError::InvalidArgumentError(format!(
+            "index {index} out of bounds for array of length {len}"
+        )))
+    }
+}
+
 /// Converts `String` values from Arrow UTF-8 arrays.
 ///
 /// Returns `None` for null values in the array.
@@ -84,6 +94,7 @@ impl FromArrow for String {
     type ArrayType = StringArray;
 
     fn from_array(array: &Self::ArrayType, index: usize) -> Result<Option<Self>, ArrowError> {
+        check_bounds(array.len(), index)?;
         if array.is_null(index) {
             Ok(None)
         } else {
@@ -103,6 +114,7 @@ impl FromArrow for i64 {
     type ArrayType = Int64Array;
 
     fn from_array(array: &Self::ArrayType, index: usize) -> Result<Option<Self>, ArrowError> {
+        check_bounds(array.len(), index)?;
         if array.is_null(index) {
             Ok(None)
         } else {
@@ -122,6 +134,7 @@ impl FromArrow for i32 {
     type ArrayType = Int32Array;
 
     fn from_array(array: &Self::ArrayType, index: usize) -> Result<Option<Self>, ArrowError> {
+        check_bounds(array.len(), index)?;
         if array.is_null(index) {
             Ok(None)
         } else {
@@ -141,6 +154,7 @@ impl FromArrow for f64 {
     type ArrayType = Float64Array;
 
     fn from_array(array: &Self::ArrayType, index: usize) -> Result<Option<Self>, ArrowError> {
+        check_bounds(array.len(), index)?;
         if array.is_null(index) {
             Ok(None)
         } else {
@@ -160,6 +174,7 @@ impl FromArrow for bool {
     type ArrayType = BooleanArray;
 
     fn from_array(array: &Self::ArrayType, index: usize) -> Result<Option<Self>, ArrowError> {
+        check_bounds(array.len(), index)?;
         if array.is_null(index) {
             Ok(None)
         } else {
@@ -179,6 +194,7 @@ impl FromArrow for Vec<u8> {
     type ArrayType = BinaryArray;
 
     fn from_array(array: &Self::ArrayType, index: usize) -> Result<Option<Self>, ArrowError> {
+        check_bounds(array.len(), index)?;
         if array.is_null(index) {
             Ok(None)
         } else {
@@ -427,5 +443,12 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("declared output type Float64"));
+    }
+
+    #[test]
+    fn test_from_array_out_of_bounds_is_an_error() {
+        let array = StringArray::from(vec!["hello"]);
+        let error = String::from_array(&array, 1).unwrap_err();
+        assert!(error.to_string().contains("index 1 out of bounds"));
     }
 }
