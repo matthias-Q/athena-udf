@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "athena-udf"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow",
  "base64 0.22.1",
@@ -846,7 +846,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "manual-udf"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "athena-udf",
  "lambda_runtime",
@@ -1118,7 +1118,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-udf"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "athena-udf",
  "lambda_runtime",
