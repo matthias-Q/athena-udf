@@ -129,6 +129,7 @@ types:
 | BOOLEAN         | bool      |
 | VARBINARY       | Vec<u8>   |
 | ROW(...)        | `StructValue` |
+| ARRAY<T>        | `ListValue` |
 
 Every type is available as `Option<T>` for explicit null handling.
 
@@ -172,7 +173,36 @@ names and field types in the response always match the SQL signature. A struct
 value that is missing a declared field is rejected with an error.
 
 `ScalarValue` supports the same types as the table above, including nested
-structs. `ScalarValue::Null` marks a null field inside a row.
+structs and lists. `ScalarValue::Null` marks a null field inside a row.
+
+## List Values
+
+An `ARRAY<T>` column arrives as an Arrow list. Use `ListValue` to read it and to
+build a new one. This covers `ARRAY(ROW(...))`, the shape most multi-row UDFs
+return:
+
+```rust
+use athena_udf::{ListValue, ScalarValue, StructValue};
+
+/// SQL: USING EXTERNAL FUNCTION units(text VARCHAR)
+///      RETURNS ARRAY(ROW(amount VARCHAR, unit VARCHAR))
+pub fn units(text: String) -> ListValue {
+    text.split_whitespace()
+        .filter_map(|word| word.split_once('.'))
+        .map(|(amount, unit)| {
+            ScalarValue::Struct(StructValue::new([
+                ("amount", amount.into()),
+                ("unit", unit.into()),
+            ]))
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+```
+
+The element type comes from the declared `ARRAY` type of the request, so one
+Rust type covers every list the SQL can spell. Null rows stay null, and
+`ScalarValue::Null` marks a null element.
 
 ## Null Handling
 

@@ -15,12 +15,12 @@
 
 use crate::arrow_conversions::{FromArrow, ToArrow};
 use arrow::array::{
-    as_boolean_array, as_generic_binary_array, as_primitive_array, as_string_array,
+    as_boolean_array, as_generic_binary_array, as_list_array, as_primitive_array, as_string_array,
     as_struct_array, Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int32Array,
-    Int64Array, StringArray, StructArray,
+    Int64Array, ListArray, StringArray, StructArray,
 };
-use arrow::buffer::NullBuffer;
-use arrow::datatypes::{DataType, Fields, Int32Type, Int64Type};
+use arrow::buffer::{NullBuffer, OffsetBuffer};
+use arrow::datatypes::{DataType, Field, Fields, Int32Type, Int64Type};
 use arrow::error::ArrowError;
 use std::sync::Arc;
 
@@ -38,6 +38,7 @@ pub enum ScalarValue {
     Boolean(bool),
     Binary(Vec<u8>),
     Struct(StructValue),
+    List(Vec<ScalarValue>),
 }
 
 impl From<String> for ScalarValue {
@@ -85,6 +86,12 @@ impl From<Vec<u8>> for ScalarValue {
 impl From<StructValue> for ScalarValue {
     fn from(value: StructValue) -> Self {
         Self::Struct(value)
+    }
+}
+
+impl From<Vec<ScalarValue>> for ScalarValue {
+    fn from(value: Vec<ScalarValue>) -> Self {
+        Self::List(value)
     }
 }
 
@@ -136,6 +143,50 @@ impl StructValue {
     }
 }
 
+/// A list column value: an ordered list of [`ScalarValue`]s.
+///
+/// `ListValue` builds and reads `ARRAY<T>` columns, including
+/// `ARRAY<ROW(...)>`. The element type comes from the declared output type of
+/// the request, so one Rust type covers every list the SQL can spell.
+///
+/// # Examples
+///
+/// ```
+/// # use athena_udf::{ListValue, ScalarValue, StructValue};
+/// let rows = ListValue::new([
+///     ScalarValue::Struct(StructValue::new([("unit", "kg".into())])),
+///     ScalarValue::Struct(StructValue::new([("unit", "l".into())])),
+/// ]);
+/// assert_eq!(rows.values().len(), 2);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListValue {
+    values: Vec<ScalarValue>,
+}
+
+impl ListValue {
+    /// Creates a list value from its elements.
+    pub fn new<I>(values: I) -> Self
+    where
+        I: IntoIterator<Item = ScalarValue>,
+    {
+        Self {
+            values: values.into_iter().collect(),
+        }
+    }
+
+    /// Returns the elements in order.
+    pub fn values(&self) -> &[ScalarValue] {
+        &self.values
+    }
+}
+
+impl From<Vec<ScalarValue>> for ListValue {
+    fn from(values: Vec<ScalarValue>) -> Self {
+        Self { values }
+    }
+}
+
 /// Reads one value from any supported array type.
 fn read_value(array: &dyn Array, index: usize) -> Result<ScalarValue, ArrowError> {
     if array.is_null(index) {
@@ -163,6 +214,14 @@ fn read_value(array: &dyn Array, index: usize) -> Result<ScalarValue, ArrowError
             Some(value) => Ok(ScalarValue::Struct(value)),
             None => Ok(ScalarValue::Null),
         },
+        DataType::List(_) => {
+            let elements = as_list_array(array).value(index);
+            let mut values = Vec::with_capacity(elements.len());
+            for position in 0..elements.len() {
+                values.push(read_value(elements.as_ref(), position)?);
+            }
+            Ok(ScalarValue::List(values))
+        }
         other => Err(ArrowError::NotYetImplemented(format!(
             "unsupported struct field type {other}"
         ))),
@@ -179,6 +238,7 @@ fn variant_name(value: &ScalarValue) -> &'static str {
         ScalarValue::Boolean(_) => "Boolean",
         ScalarValue::Binary(_) => "Binary",
         ScalarValue::Struct(_) => "Struct",
+        ScalarValue::List(_) => "List",
     }
 }
 
@@ -271,6 +331,17 @@ fn build_child(
                 .collect::<Result<_, _>>()?;
             struct_array(&nested, field_type)
         }
+        DataType::List(inner) => {
+            let rows: Vec<Option<&Vec<ScalarValue>>> = values
+                .iter()
+                .map(|value| match value {
+                    None | Some(ScalarValue::Null) => Ok(None),
+                    Some(ScalarValue::List(items)) => Ok(Some(items)),
+                    Some(other) => Err(mismatch("List", other)),
+                })
+                .collect::<Result<_, _>>()?;
+            list_array(&rows, inner, field_type)
+        }
         other => Err(ArrowError::NotYetImplemented(format!(
             "unsupported struct field type {other}"
         ))),
@@ -322,6 +393,48 @@ fn missing_field(name: &str) -> ArrowError {
     ))
 }
 
+/// Builds a list array for the declared list type.
+fn list_array(
+    rows: &[Option<&Vec<ScalarValue>>],
+    inner: &Arc<Field>,
+    field_type: &DataType,
+) -> Result<ArrayRef, ArrowError> {
+    if !matches!(field_type, DataType::List(_)) {
+        return Err(ArrowError::InvalidArgumentError(format!(
+            "declared output type {field_type} is not a list"
+        )));
+    }
+
+    let mut elements: Vec<Option<&ScalarValue>> = Vec::new();
+    let mut offsets = Vec::with_capacity(rows.len() + 1);
+    offsets.push(0i32);
+
+    for row in rows {
+        if let Some(items) = row {
+            elements.extend(items.iter().map(|value| match value {
+                ScalarValue::Null => None,
+                value => Some(value),
+            }));
+        }
+        offsets.push(i32::try_from(elements.len()).map_err(|_| {
+            ArrowError::InvalidArgumentError("list value exceeds the i32 offset range".to_string())
+        })?);
+    }
+
+    let values = build_child(inner.data_type(), &elements)?;
+    let nulls = rows
+        .iter()
+        .any(Option::is_none)
+        .then(|| rows.iter().map(Option::is_some).collect::<NullBuffer>());
+
+    Ok(Arc::new(ListArray::try_new(
+        inner.clone(),
+        OffsetBuffer::new(offsets.into()),
+        values,
+        nulls,
+    )?))
+}
+
 impl FromArrow for StructValue {
     type ArrayType = StructArray;
 
@@ -353,6 +466,40 @@ impl ToArrow for StructValue {
     fn to_array(values: Vec<Option<Self>>, field_type: &DataType) -> Result<ArrayRef, ArrowError> {
         let rows: Vec<Option<&StructValue>> = values.iter().map(Option::as_ref).collect();
         struct_array(&rows, field_type)
+    }
+}
+
+impl FromArrow for ListValue {
+    type ArrayType = ListArray;
+
+    fn from_array(array: &Self::ArrayType, index: usize) -> Result<Option<Self>, ArrowError> {
+        if array.is_null(index) {
+            return Ok(None);
+        }
+
+        match read_value(array, index)? {
+            ScalarValue::List(values) => Ok(Some(Self { values })),
+            other => Err(mismatch("List", &other)),
+        }
+    }
+
+    fn array_type() -> DataType {
+        DataType::List(Arc::new(Field::new("item", DataType::Null, true)))
+    }
+}
+
+impl ToArrow for ListValue {
+    fn to_array(values: Vec<Option<Self>>, field_type: &DataType) -> Result<ArrayRef, ArrowError> {
+        let DataType::List(inner) = field_type else {
+            return Err(ArrowError::InvalidArgumentError(format!(
+                "declared output type {field_type} is not a list"
+            )));
+        };
+        let rows: Vec<Option<&Vec<ScalarValue>>> = values
+            .iter()
+            .map(|value| value.as_ref().map(|list| &list.values))
+            .collect();
+        list_array(&rows, inner, field_type)
     }
 }
 
@@ -504,5 +651,91 @@ mod tests {
 
         let error = StructValue::from_array(&array, 0).unwrap_err();
         assert!(error.to_string().contains("unsupported struct field type"));
+    }
+
+    fn list_of_rows_type() -> DataType {
+        DataType::List(Arc::new(Field::new("item", row_type(), true)))
+    }
+
+    fn quantities() -> ListValue {
+        ListValue::new([
+            ScalarValue::Struct(StructValue::new([
+                ("name", "athena".into()),
+                ("size", ScalarValue::Int64(3)),
+            ])),
+            ScalarValue::Struct(StructValue::new([
+                ("name", "hermes".into()),
+                ("size", ScalarValue::Int64(5)),
+            ])),
+        ])
+    }
+
+    #[test]
+    fn writes_arrays_of_rows() {
+        let values = vec![Some(quantities()), Some(ListValue::default())];
+        let array = ListValue::to_array(values, &list_of_rows_type()).unwrap();
+        let list = as_list_array(array.as_ref());
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.value_length(0), 2);
+        assert_eq!(list.value_length(1), 0);
+
+        let element = list.value(0);
+        let rows = as_struct_array(element.as_ref());
+        assert_eq!(
+            rows.column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(1),
+            5
+        );
+    }
+
+    #[test]
+    fn reads_arrays_of_rows() {
+        let values = vec![Some(quantities())];
+        let array = ListValue::to_array(values, &list_of_rows_type()).unwrap();
+        let list = as_list_array(array.as_ref());
+
+        let read = ListValue::from_array(list, 0).unwrap().unwrap();
+        assert_eq!(read.values().len(), 2);
+        let ScalarValue::Struct(first) = &read.values()[0] else {
+            panic!("expected a struct element");
+        };
+        assert_eq!(
+            first.get("name"),
+            Some(&ScalarValue::String("athena".into()))
+        );
+    }
+
+    #[test]
+    fn null_list_rows_stay_null() {
+        let values: Vec<Option<ListValue>> = vec![None, Some(quantities())];
+        let array = ListValue::to_array(values, &list_of_rows_type()).unwrap();
+        let list = as_list_array(array.as_ref());
+
+        assert!(list.is_null(0));
+        assert_eq!(list.value_length(1), 2);
+        assert_eq!(ListValue::from_array(list, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn struct_with_list_field_round_trip() {
+        let inner_type = DataType::Struct(
+            vec![Arc::new(Field::new("children", list_of_rows_type(), true))].into(),
+        );
+        let row = StructValue::new([(
+            "children",
+            ScalarValue::List(quantities().values().to_vec()),
+        )]);
+
+        let array = StructValue::to_array(vec![Some(row)], &inner_type).unwrap();
+        let outer = as_struct_array(array.as_ref());
+        let read = StructValue::from_array(outer, 0).unwrap().unwrap();
+        let Some(ScalarValue::List(children)) = read.get("children") else {
+            panic!("expected a list field");
+        };
+        assert_eq!(children.len(), 2);
     }
 }

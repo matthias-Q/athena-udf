@@ -50,6 +50,7 @@
 //! | `BOOLEAN`       | `bool`      |
 //! | `VARBINARY`     | `Vec<u8>`   |
 //! | `ROW(...)`      | [`StructValue`] |
+//! | `ARRAY<T>`      | [`ListValue`] |
 //!
 //! Wrap a type in `Option<T>` to receive nulls instead of skipping the row, and
 //! to return null explicitly.
@@ -70,7 +71,7 @@ pub use lambda_runtime::Error;
 pub use process_macro::UDFProcessor;
 pub use request::{AthenaUDFRequest, Identity, InputRecords, OutputSchemaWrapper, PingRequest};
 pub use response::{AthenaResponse, AthenaUDFResponse, OutputRecords, PingResponse};
-pub use struct_value::{ScalarValue, StructValue};
+pub use struct_value::{ListValue, ScalarValue, StructValue};
 
 pub use lambda_runtime::{run, service_fn, LambdaEvent};
 pub use serde::{Deserialize, Serialize};
