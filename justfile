@@ -4,8 +4,8 @@
 #   just ci              what CI runs (format, lint, tests, docs)
 #   just lambda-build    build simple-udf for AWS Lambda
 #   just deploy          deploy simple-udf to AWS Lambda
-#   just publish patch   bump, tag and push; then publish a GitHub Release
-#                        to run the crates.io workflow
+#   just publish         bump patch (or minor|major|X.Y.Z), commit, tag vX.Y.Z,
+#                        and push main + tag to trigger the release workflow
 
 default:
     @just --list
@@ -82,9 +82,41 @@ ping:
 
 # --- release -----------------------------------------------------------------
 
-# Bump, sign, tag and push. The pushed tag creates the GitHub release and publishes.
-publish LEVEL="patch" *FLAGS:
-    cargo release {{LEVEL}} --package athena-udf --exclude simple-udf --exclude manual-udf {{FLAGS}}
+# Bump version (patch|minor|major or X.Y.Z), commit, sign tag vX.Y.Z, and push main + tag.
+alias release := publish
+publish LEVEL="patch":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        echo "error: working tree has uncommitted changes; commit or stash them first." >&2
+        exit 1
+    fi
+    current=$(cargo metadata --no-deps --format-version 1 \
+        | jq -r '.packages[] | select(.name == "athena-udf") | .version')
+    IFS='.' read -r major minor patch <<< "$current"
+    level="{{LEVEL}}"
+    case "$level" in
+        patch) next="${major}.${minor}.$((patch + 1))" ;;
+        minor) next="${major}.$((minor + 1)).0" ;;
+        major) next="$((major + 1)).0.0" ;;
+        v*.*.*) next="${level#v}" ;;
+        *.*.*) next="$level" ;;
+        *) echo "error: expected patch, minor, major, or X.Y.Z (got '$level')" >&2; exit 1 ;;
+    esac
+    tag="v${next}"
+    echo "Releasing ${current} -> ${next} (${tag})"
+    sed -i "0,/^version = \".*\"/s//version = \"${next}\"/" Cargo.toml
+    cargo check --workspace --quiet
+    git add Cargo.toml Cargo.lock
+    if ! git diff --cached --quiet; then
+        git commit -m "chore: release ${tag}"
+    fi
+    git tag -s -f "${tag}" -m "${tag}"
+    git push origin HEAD
+    if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+        git push origin ":refs/tags/${tag}"
+    fi
+    git push origin "refs/tags/${tag}"
 
 # Verify the package on crates.io without uploading it.
 publish-dry:
