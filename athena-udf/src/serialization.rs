@@ -1,44 +1,57 @@
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
+use arrow::error::ArrowError;
 use arrow::ipc::writer::{
-    CompressionContext, DictionaryTracker, IpcDataGenerator, IpcWriteOptions,
+    write_message, DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
 };
 use lambda_runtime::Error;
 use std::sync::Arc;
 
-/// Writes an IPC message to a buffer following the Apache Arrow IPC format specification.
+/// Encodes a schema and its record batches into two Arrow IPC streams.
 ///
-/// The message format consists of:
-/// 1. Continuation marker (0xFFFFFFFF)
-/// 2. Metadata size (4 bytes, little-endian)
-/// 3. Metadata flatbuffer (padded to 8-byte alignment)
-/// 4. Message body (arrow data)
+/// The schema stream holds the schema message. The records stream holds the
+/// dictionary messages and the record batch messages. One dictionary tracker is
+/// shared by both streams, so the dictionary ids in the records match the ids in
+/// the schema. A tracker per stream would produce unmatched ids.
 ///
 /// # Arguments
 ///
-/// * `buffer` - The output buffer to write the message to
-/// * `encoded` - The encoded IPC data containing the message and arrow data
+/// * `schema` - The schema the batches were built for
+/// * `batches` - The record batches to encode
 ///
-/// # References
+/// # Errors
 ///
-/// See [Arrow IPC Format](https://arrow.apache.org/docs/format/Columnar.html#format-ipc)
-fn write_ipc_message(buffer: &mut Vec<u8>, encoded: &arrow::ipc::writer::EncodedData) {
-    //https://arrow.apache.org/docs/format/Columnar.html#format-ipc
+/// Returns an error if the schema or any batch cannot be encoded.
+pub(crate) fn encode_stream(
+    schema: &Schema,
+    batches: &[RecordBatch],
+) -> Result<(Vec<u8>, Vec<u8>), ArrowError> {
+    let options = IpcWriteOptions::default();
+    let generator = IpcDataGenerator::default();
+    let mut dictionary_tracker = DictionaryTracker::new(false);
+    let mut context = IpcWriteContext::default();
 
-    // Continuation Marker
-    buffer.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+    let mut schema_buffer = Vec::new();
+    let encoded_schema = generator.schema_to_bytes_with_dictionary_tracker(
+        schema,
+        &mut dictionary_tracker,
+        &options,
+    );
+    write_message(&mut schema_buffer, encoded_schema, &options)?;
 
-    let metadata_size = encoded.ipc_message.len() as i32;
-    buffer.extend_from_slice(&metadata_size.to_le_bytes());
+    let mut records_buffer = Vec::new();
+    for batch in batches {
+        let (encoded_dictionaries, encoded_batch) =
+            generator.encode(batch, &mut dictionary_tracker, &options, &mut context)?;
 
-    // metadata flatbuffer
-    buffer.extend_from_slice(&encoded.ipc_message);
+        for dictionary in encoded_dictionaries {
+            write_message(&mut records_buffer, dictionary, &options)?;
+        }
 
-    let padding = (8 - (encoded.ipc_message.len() % 8)) % 8;
-    buffer.extend_from_slice(&vec![0u8; padding]);
+        write_message(&mut records_buffer, encoded_batch, &options)?;
+    }
 
-    // message body
-    buffer.extend_from_slice(&encoded.arrow_data);
+    Ok((schema_buffer, records_buffer))
 }
 
 /// Serializes an Arrow schema to IPC format.
@@ -77,23 +90,18 @@ fn write_ipc_message(buffer: &mut Vec<u8>, encoded: &arrow::ipc::writer::Encoded
 /// assert!(buffer.starts_with(&[0xFF, 0xFF, 0xFF, 0xFF]));
 /// ```
 pub fn serialize_schema(schema: &Arc<Schema>) -> Result<Vec<u8>, Error> {
-    let mut buffer = Vec::new();
-    let options = IpcWriteOptions::default();
-    let data_gen = IpcDataGenerator::default();
-    let mut dictionary_tracker = DictionaryTracker::new(false);
-
-    let encoded_schema =
-        data_gen.schema_to_bytes_with_dictionary_tracker(schema, &mut dictionary_tracker, &options);
-
-    write_ipc_message(&mut buffer, &encoded_schema);
-    Ok(buffer)
+    Ok(encode_stream(schema, &[])?.0)
 }
-///
+
 /// Serializes Arrow record batches to IPC format.
 ///
 /// Converts one or more Arrow record batches into a byte buffer using the Arrow IPC
 /// streaming format. Each batch is encoded with its dictionaries (if any) and written
 /// sequentially to the output buffer.
+///
+/// The batches must be built for the schema that is sent alongside them, because
+/// dictionary ids are assigned per stream. [`crate::response::AthenaUDFResponse::from_batches`]
+/// encodes both streams together and does not have this constraint.
 ///
 /// # Arguments
 ///
@@ -139,45 +147,49 @@ pub fn serialize_schema(schema: &Arc<Schema>) -> Result<Vec<u8>, Error> {
 /// assert!(buffer.starts_with(&[0xFF, 0xFF, 0xFF, 0xFF]));
 /// ```
 pub fn serialize_batches(batches: &[RecordBatch]) -> Result<Vec<u8>, Error> {
-    let mut buffer = Vec::new();
-
-    if !batches.is_empty() {
-        let options = IpcWriteOptions::default();
-        let data_gen = IpcDataGenerator::default();
-        let mut dictionary_tracker = DictionaryTracker::new(false);
-        let mut compression_context = CompressionContext::default();
-
-        for batch in batches {
-            let (encoded_dictionaries, encoded_batch) = data_gen.encode(
-                batch,
-                &mut dictionary_tracker,
-                &options,
-                &mut compression_context,
-            )?;
-
-            for dict in encoded_dictionaries {
-                write_ipc_message(&mut buffer, &dict);
-            }
-
-            write_ipc_message(&mut buffer, &encoded_batch);
-        }
+    match batches.first() {
+        Some(first) => Ok(encode_stream(&first.schema(), batches)?.1),
+        None => Ok(Vec::new()),
     }
-
-    Ok(buffer)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
-    use arrow::datatypes::{Field, Schema};
+    use arrow::array::{Array, DictionaryArray, Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema};
+    use arrow::ipc::reader::StreamReader;
     use arrow::record_batch::RecordBatch;
+    use std::io::Cursor;
+
+    fn read_stream(mut stream: Vec<u8>) -> Vec<RecordBatch> {
+        let reader = StreamReader::try_new(Cursor::new(&mut stream), None).unwrap();
+        reader.collect::<Result<_, _>>().unwrap()
+    }
+
+    #[test]
+    fn test_schema_with_padding_roundtrips_with_batches() {
+        let schema = Arc::new(Schema::new(vec![Field::new("col1", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec![Some("a"), None]))],
+        )
+        .unwrap();
+
+        let mut stream = serialize_schema(&schema).unwrap();
+        stream.extend(serialize_batches(&[batch]).unwrap());
+
+        let batches = read_stream(stream);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 2);
+        assert!(batches[0].column(0).is_null(1));
+    }
 
     #[test]
     fn test_serialize_schema() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("col1", arrow::datatypes::DataType::Int32, false),
-            Field::new("col2", arrow::datatypes::DataType::Utf8, true),
+            Field::new("col1", DataType::Int32, false),
+            Field::new("col2", DataType::Utf8, true),
         ]));
 
         let result = serialize_schema(&schema);
@@ -199,7 +211,7 @@ mod tests {
     fn test_serialize_batches() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "col1",
-            arrow::datatypes::DataType::Int32,
+            DataType::Int32,
             false,
         )]));
 
@@ -218,7 +230,7 @@ mod tests {
     fn test_serialize_multiple_batches() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "col1",
-            arrow::datatypes::DataType::Int32,
+            DataType::Int32,
             false,
         )]));
 
@@ -232,5 +244,26 @@ mod tests {
 
         let buffer = result.unwrap();
         assert!(!buffer.is_empty());
+    }
+
+    #[test]
+    fn test_dictionary_batches_roundtrip() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "dict",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            true,
+        )]));
+        let dictionary: DictionaryArray<Int32Type> =
+            vec![Some("a"), None, Some("b")].into_iter().collect();
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(dictionary)]).unwrap();
+
+        let (schema_buffer, records_buffer) = encode_stream(&schema, &[batch]).unwrap();
+        let mut stream = schema_buffer;
+        stream.extend(records_buffer);
+
+        let batches = read_stream(stream);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 3);
+        assert_eq!(batches[0].schema(), schema);
     }
 }

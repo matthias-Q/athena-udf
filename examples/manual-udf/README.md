@@ -29,7 +29,7 @@ Choose manual implementation over the macro when you need:
 
 ```rust
 async fn function_handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
-    handle_athena_request(event, |input_batch, method_name, output_col_name| {
+    handle_athena_request(event, |input_batch, method_name, output_field| {
         // Custom logging
         tracing::info!("Processing UDF: {}", method_name);
         
@@ -37,11 +37,11 @@ async fn function_handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
         match method_name {
             "string_reverse" => {
                 UDFProcessor::new(input_batch)
-                    .process_unary::<String, String, _>(output_col_name, string_reverse)
+                    .process_unary::<String, String, _>(output_field, string_reverse)
             }
             "add_numbers" => {
                 UDFProcessor::new(input_batch)
-                    .process_binary::<i64, i64, i64, _>(output_col_name, add_numbers)
+                    .process_binary::<i64, i64, i64, _>(output_field, add_numbers)
             }
             // ... more functions
             _ => {
@@ -58,13 +58,13 @@ async fn function_handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
 **Manual (this example):**
 ```rust
 async fn function_handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
-    handle_athena_request(event, |input_batch, method_name, output_col_name| {
+    handle_athena_request(event, |input_batch, method_name, output_field| {
         tracing::info!("Processing UDF: {}", method_name);
         match method_name {
             "string_reverse" => UDFProcessor::new(input_batch)
-                .process_unary::<String, String, _>(output_col_name, string_reverse),
+                .process_unary::<String, String, _>(output_field, string_reverse),
             "add_numbers" => UDFProcessor::new(input_batch)
-                .process_binary::<i64, i64, i64, _>(output_col_name, add_numbers),
+                .process_binary::<i64, i64, i64, _>(output_field, add_numbers),
             _ => Err(format!("Unknown function: {}", method_name).into()),
         }
     }).await
@@ -172,12 +172,12 @@ The `UDFProcessor` provides methods for different arities:
 
 ```rust
 async fn function_handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
-    handle_athena_request(event, |input_batch, method_name, output_col_name| {
+    handle_athena_request(event, |input_batch, method_name, output_field| {
         let start = std::time::Instant::now();
         
         let result = match method_name {
             "string_reverse" => UDFProcessor::new(input_batch)
-                .process_unary::<String, String, _>(output_col_name, string_reverse),
+                .process_unary::<String, String, _>(output_field, string_reverse),
             _ => Err(format!("Unknown function: {}", method_name).into()),
         };
         

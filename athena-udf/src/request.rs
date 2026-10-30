@@ -1,5 +1,5 @@
 use arrow::array::RecordBatch;
-use arrow::datatypes::Schema;
+use arrow::datatypes::{Field, Schema};
 use arrow::ipc::reader::StreamReader;
 use lambda_runtime::Error;
 use serde::Deserialize;
@@ -45,13 +45,9 @@ pub struct AthenaUDFRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
-    #[serde(default)]
     pub id: Option<String>,
-    #[serde(default)]
     pub principal: Option<String>,
-    #[serde(default)]
     pub account: Option<String>,
-    #[serde(default)]
     pub arn: Option<String>,
 }
 
@@ -98,8 +94,12 @@ impl AthenaUDFRequest {
     /// - The schema and records are incompatible
     /// - Any batch fails to deserialize
     pub fn read_input_batches(&self) -> Result<Vec<RecordBatch>, Error> {
-        let mut combined_data = self.input_records.schema.clone();
-        combined_data.extend_from_slice(&self.input_records.records);
+        let schema_bytes = &self.input_records.schema;
+        let record_bytes = &self.input_records.records;
+
+        let mut combined_data = Vec::with_capacity(schema_bytes.len() + record_bytes.len());
+        combined_data.extend_from_slice(schema_bytes);
+        combined_data.extend_from_slice(record_bytes);
 
         let cursor = Cursor::new(combined_data);
         let reader = StreamReader::try_new(cursor, None)
@@ -137,8 +137,8 @@ impl AthenaUDFRequest {
     ///
     /// # Arguments
     ///
-    /// * `processor` - A function that takes a `RecordBatch`, method name, and output
-    ///   column name, and returns a transformed `RecordBatch`
+    /// * `processor` - A function that takes a `RecordBatch`, the method name, and the
+    ///   declared output field, and returns a transformed `RecordBatch`
     ///
     /// # Returns
     ///
@@ -147,21 +147,33 @@ impl AthenaUDFRequest {
     /// # Errors
     ///
     /// Returns an error if:
+    /// - The request is not a scalar function request
     /// - Input batches cannot be read
-    /// - Output schema cannot be read
+    /// - The output schema is empty or cannot be read
     /// - The processor function returns an error for any batch
     /// - The response cannot be constructed from the output batches
     pub fn process_with<F>(self, mut processor: F) -> Result<crate::response::AthenaResponse, Error>
     where
-        F: FnMut(&RecordBatch, &str, &str) -> Result<RecordBatch, Error>,
+        F: FnMut(&RecordBatch, &str, &Field) -> Result<RecordBatch, Error>,
     {
+        if !self.function_type.eq_ignore_ascii_case("SCALAR") {
+            return Err(format!(
+                "Unsupported functionType: {}. Only SCALAR functions are supported",
+                self.function_type
+            )
+            .into());
+        }
+
         let input_batches = self.read_input_batches()?;
         let output_schema = self.read_output_schema()?;
-        let output_col_name = output_schema.field(0).name();
+        let output_field = output_schema
+            .fields()
+            .first()
+            .ok_or("The output schema has no fields")?;
 
         let output_batches: Result<Vec<RecordBatch>, Error> = input_batches
             .iter()
-            .map(|batch| processor(batch, &self.method_name, output_col_name))
+            .map(|batch| processor(batch, &self.method_name, output_field))
             .collect();
 
         let response = crate::response::AthenaUDFResponse::from_batches(

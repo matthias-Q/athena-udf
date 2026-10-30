@@ -37,11 +37,7 @@
 /// }
 ///
 /// #[tokio::main]
-/// async fn main() -> Result<(), Error> {
-///     tracing_subscriber::fmt()
-///         .with_max_level(tracing_subscriber::filter::LevelFilter::INFO)
-///         .init();
-///
+/// async fn main() -> Result<(), athena_udf::Error> {
 ///     run(service_fn(function_handler)).await
 /// }
 /// ```
@@ -52,54 +48,13 @@ macro_rules! athena_udf_handler {
     ) => {
         async fn function_handler(
             event: $crate::LambdaEvent<$crate::Value>
-        ) -> Result<$crate::Value, lambda_runtime::Error> {
-            $crate::handle_athena_request(event, |input_batch, method_name, output_col_name| {
-                match method_name {
-                    $(
-                        $name => {
-                            $crate::athena_udf_handler!(@process input_batch, output_col_name, $fn, ($($input),+), $output)
-                        }
-                    )+
-                    _ => Err(format!("Unknown function: {}", method_name).into()),
-                }
+        ) -> Result<$crate::Value, $crate::Error> {
+            $crate::handle_athena_request(event, |input_batch, method_name, output_field| {
+                $crate::register_udfs!(input_batch, method_name, output_field => {
+                    $( $name => $fn : ( $($input),+ ) -> $output ),+
+                })
             }).await
         }
-    };
-
-    // Process unary functions (1 input)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty), $output:ty) => {
-        $crate::UDFProcessor::new($batch)
-            .process_unary::<$i1, $output, _>($output_col, $fn)
-    };
-
-    // Process binary functions (2 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty), $output:ty) => {
-        $crate::UDFProcessor::new($batch)
-            .process_binary::<$i1, $i2, $output, _>($output_col, $fn)
-    };
-
-    // Process ternary functions (3 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty), $output:ty) => {
-        $crate::UDFProcessor::new($batch)
-            .process_ternary::<$i1, $i2, $i3, $output, _>($output_col, $fn)
-    };
-
-    // Process quaternary functions (4 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty), $output:ty) => {
-        $crate::UDFProcessor::new($batch)
-            .process_quaternary::<$i1, $i2, $i3, $i4, $output, _>($output_col, $fn)
-    };
-
-    // Process quinary functions (5 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty, $i5:ty), $output:ty) => {
-        $crate::UDFProcessor::new($batch)
-            .process_quinary::<$i1, $i2, $i3, $i4, $i5, $output, _>($output_col, $fn)
-    };
-
-    // Process senary functions (6 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty, $i5:ty, $i6:ty), $output:ty) => {
-        $crate::UDFProcessor::new($batch)
-            .process_senary::<$i1, $i2, $i3, $i4, $i5, $i6, $output, _>($output_col, $fn)
     };
 }
 
@@ -113,7 +68,7 @@ macro_rules! athena_udf_handler {
 /// # Syntax
 ///
 /// ```ignore
-/// register_udfs!(input_batch, method_name, output_col_name => {
+/// register_udfs!(input_batch, method_name, output_field => {
 ///     "function_name" => function_ident: (InputType1, InputType2, ...) -> OutputType,
 ///     ...
 /// })
@@ -122,14 +77,14 @@ macro_rules! athena_udf_handler {
 macro_rules! register_udfs {
     // Entry point: processes all function registrations
     (
-        $batch:expr, $method:expr, $output_col:expr => {
+        $batch:expr, $method:expr, $output_field:expr => {
             $( $name:literal => $fn:ident : ( $($input:ty),+ ) -> $output:ty ),+ $(,)?
         }
     ) => {
         match $method {
             $(
                 $name => {
-                    $crate::register_udfs!(@process $batch, $output_col, $fn, ($($input),+), $output)
+                    $crate::register_udfs!(@process $batch, $output_field, $fn, ($($input),+), $output)
                 }
             )+
             _ => Err(format!("Unknown function: {}", $method).into()),
@@ -137,45 +92,44 @@ macro_rules! register_udfs {
     };
 
     // Process unary functions (1 input)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty), $output:ty) => {
+    (@process $batch:expr, $output_field:expr, $fn:ident, ($i1:ty), $output:ty) => {
         $crate::UDFProcessor::new($batch)
-            .process_unary::<$i1, $output, _>($output_col, $fn)
+            .process_unary::<$i1, $output, _>($output_field, $fn)
     };
 
     // Process binary functions (2 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty), $output:ty) => {
+    (@process $batch:expr, $output_field:expr, $fn:ident, ($i1:ty, $i2:ty), $output:ty) => {
         $crate::UDFProcessor::new($batch)
-            .process_binary::<$i1, $i2, $output, _>($output_col, $fn)
+            .process_binary::<$i1, $i2, $output, _>($output_field, $fn)
     };
 
     // Process ternary functions (3 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty), $output:ty) => {
+    (@process $batch:expr, $output_field:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty), $output:ty) => {
         $crate::UDFProcessor::new($batch)
-            .process_ternary::<$i1, $i2, $i3, $output, _>($output_col, $fn)
+            .process_ternary::<$i1, $i2, $i3, $output, _>($output_field, $fn)
     };
 
     // Process quaternary functions (4 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty), $output:ty) => {
+    (@process $batch:expr, $output_field:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty), $output:ty) => {
         $crate::UDFProcessor::new($batch)
-            .process_quaternary::<$i1, $i2, $i3, $i4, $output, _>($output_col, $fn)
+            .process_quaternary::<$i1, $i2, $i3, $i4, $output, _>($output_field, $fn)
     };
 
     // Process quinary functions (5 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty, $i5:ty), $output:ty) => {
+    (@process $batch:expr, $output_field:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty, $i5:ty), $output:ty) => {
         $crate::UDFProcessor::new($batch)
-            .process_quinary::<$i1, $i2, $i3, $i4, $i5, $output, _>($output_col, $fn)
+            .process_quinary::<$i1, $i2, $i3, $i4, $i5, $output, _>($output_field, $fn)
     };
 
     // Process senary functions (6 inputs)
-    (@process $batch:expr, $output_col:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty, $i5:ty, $i6:ty), $output:ty) => {
+    (@process $batch:expr, $output_field:expr, $fn:ident, ($i1:ty, $i2:ty, $i3:ty, $i4:ty, $i5:ty, $i6:ty), $output:ty) => {
         $crate::UDFProcessor::new($batch)
-            .process_senary::<$i1, $i2, $i3, $i4, $i5, $i6, $output, _>($output_col, $fn)
+            .process_senary::<$i1, $i2, $i3, $i4, $i5, $i6, $output, _>($output_field, $fn)
     };
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::*;
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -200,9 +154,9 @@ mod tests {
         let input_batch = RecordBatch::try_new(schema, vec![Arc::new(input_array)]).unwrap();
 
         let method_name = "string_reverse";
-        let output_col_name = "output";
+        let output_field = Field::new("output", DataType::Utf8, true);
 
-        let result = register_udfs!(&input_batch, method_name, output_col_name => {
+        let result = register_udfs!(&input_batch, method_name, &output_field => {
             "string_reverse" => string_reverse: (String) -> String,
         });
 
@@ -230,9 +184,9 @@ mod tests {
             RecordBatch::try_new(schema, vec![Arc::new(a_array), Arc::new(b_array)]).unwrap();
 
         let method_name = "add_numbers";
-        let output_col_name = "output";
+        let output_field = Field::new("output", DataType::Int64, true);
 
-        let result = register_udfs!(&input_batch, method_name, output_col_name => {
+        let result = register_udfs!(&input_batch, method_name, &output_field => {
             "add_numbers" => add_numbers: (i64, i64) -> i64,
         });
 
@@ -255,9 +209,9 @@ mod tests {
         let input_batch = RecordBatch::try_new(schema, vec![Arc::new(input_array)]).unwrap();
 
         let method_name = "string_reverse";
-        let output_col_name = "output";
+        let output_field = Field::new("output", DataType::Utf8, true);
 
-        let result = register_udfs!(&input_batch, method_name, output_col_name => {
+        let result = register_udfs!(&input_batch, method_name, &output_field => {
             "string_reverse" => string_reverse: (String) -> String,
             "add_numbers" => add_numbers: (i64, i64) -> i64,
         });
@@ -272,9 +226,9 @@ mod tests {
         let input_batch = RecordBatch::try_new(schema, vec![Arc::new(input_array)]).unwrap();
 
         let method_name = "unknown_function";
-        let output_col_name = "output";
+        let output_field = Field::new("output", DataType::Utf8, true);
 
-        let result = register_udfs!(&input_batch, method_name, output_col_name => {
+        let result = register_udfs!(&input_batch, method_name, &output_field => {
             "string_reverse" => string_reverse: (String) -> String,
         });
 
@@ -299,9 +253,9 @@ mod tests {
         .unwrap();
 
         let method_name = "concat_three";
-        let output_col_name = "output";
+        let output_field = Field::new("output", DataType::Utf8, true);
 
-        let result = register_udfs!(&input_batch, method_name, output_col_name => {
+        let result = register_udfs!(&input_batch, method_name, &output_field => {
             "concat_three" => concat_three: (String, String, String) -> String,
         });
 
@@ -324,8 +278,6 @@ mod tests {
         // This test verifies the macro generates valid code that compiles
         #[allow(dead_code)]
         mod inner {
-            use super::*;
-
             fn test_unary(s: String) -> String {
                 s.to_uppercase()
             }

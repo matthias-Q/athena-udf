@@ -39,25 +39,22 @@ pub fn uppercase_filtered(value: String) -> Option<String> {
 /// Manually implemented function_handler without using the macro.
 /// This gives you full control over the request handling logic.
 async fn function_handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
-    handle_athena_request(event, |input_batch, method_name, output_col_name| {
+    handle_athena_request(event, |input_batch, method_name, output_field| {
         // You can add custom logging or pre-processing here
         tracing::info!("Processing UDF: {}", method_name);
 
         // Manual match statement with explicit type parameters
         match method_name {
             "string_reverse" => UDFProcessor::new(input_batch)
-                .process_unary::<String, String, _>(output_col_name, string_reverse),
+                .process_unary::<String, String, _>(output_field, string_reverse),
             "add_numbers" => UDFProcessor::new(input_batch)
-                .process_binary::<i64, i64, i64, _>(output_col_name, add_numbers),
+                .process_binary::<i64, i64, i64, _>(output_field, add_numbers),
             "multiply" => UDFProcessor::new(input_batch)
-                .process_binary::<i64, i64, i64, _>(output_col_name, multiply),
+                .process_binary::<i64, i64, i64, _>(output_field, multiply),
             "concat_three" => UDFProcessor::new(input_batch)
-                .process_ternary::<String, String, String, String, _>(
-                    output_col_name,
-                    concat_three,
-                ),
+                .process_ternary::<String, String, String, String, _>(output_field, concat_three),
             "uppercase_filtered" => UDFProcessor::new(input_batch)
-                .process_unary::<String, Option<String>, _>(output_col_name, uppercase_filtered),
+                .process_unary::<String, Option<String>, _>(output_field, uppercase_filtered),
             _ => {
                 // Custom error handling
                 tracing::error!("Unknown function requested: {}", method_name);

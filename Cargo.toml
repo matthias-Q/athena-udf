@@ -1,13 +1,13 @@
 [workspace]
-members = ["athena-udf"]
+members = ["athena-udf", "examples/manual-udf", "examples/simple-udf"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Matthias Queitsch <matthias.queitsch@unite.eu>"]
 license = "MIT"
-rust-version = "1.85.1"
+rust-version = "1.88"
 homepage = "https://github.com/matthias-Q/athena-udf"
 repository = "https://github.com/matthias-Q/athena-udf"
 

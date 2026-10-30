@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  MSRV: "1.85.1"
+  MSRV: "1.88"
 
 jobs:
   test:
@@ -40,7 +40,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy --workspace --all-features -- -D warnings
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
   fmt:
     runs-on: ubuntu-latest

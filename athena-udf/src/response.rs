@@ -1,5 +1,5 @@
 use crate::request::PingRequest;
-use crate::serialization::{serialize_batches, serialize_schema};
+use crate::serialization::encode_stream;
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use lambda_runtime::Error;
@@ -181,8 +181,7 @@ impl AthenaUDFResponse {
         schema: &Arc<Schema>,
         batches: Vec<RecordBatch>,
     ) -> Result<Self, Error> {
-        let schema_buffer = serialize_schema(schema)?;
-        let records_buffer = serialize_batches(&batches)?;
+        let (schema_buffer, records_buffer) = encode_stream(schema, &batches)?;
 
         Ok(AthenaUDFResponse {
             response_type: "UserDefinedFunctionResponse".to_string(),
@@ -400,7 +399,7 @@ mod tests {
         assert!(result.is_ok());
 
         let (parsed, is_http) = result.unwrap();
-        assert_eq!(is_http, false);
+        assert!(!is_http);
         assert_eq!(parsed.get("@type").unwrap(), "PingRequest");
     }
 
@@ -419,7 +418,7 @@ mod tests {
         assert!(result.is_ok());
 
         let (parsed, is_http) = result.unwrap();
-        assert_eq!(is_http, true);
+        assert!(is_http);
         assert_eq!(parsed.get("@type").unwrap(), "PingRequest");
     }
 
