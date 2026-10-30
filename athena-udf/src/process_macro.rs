@@ -46,10 +46,9 @@ use arrow::record_batch::RecordBatch;
 ///
 /// # Errors
 ///
-/// Returns an error when the batch has fewer columns than the function
+/// Returns an error when the batch column count does not match the function
 /// parameters, when a column has a different Arrow type, or when the output
 /// cannot be built for the declared type.
-#[macro_export]
 macro_rules! impl_process {
     ($method:ident, $($input:ident),+; $output:ident) => {
         pub fn $method<$($input,)+ $output, F>(
@@ -63,7 +62,7 @@ macro_rules! impl_process {
             F: Fn($($input),+) -> $output,
         {
             let arity = [$(stringify!($input)),+].len();
-            if self.batch.num_columns() < arity {
+            if self.batch.num_columns() != arity {
                 return Err(format!(
                     "The record batch has {} input columns, but the function expects {}",
                     self.batch.num_columns(),
@@ -408,6 +407,29 @@ mod tests {
 
         let error = result.unwrap_err().to_string();
         assert!(error.contains("1 input columns, but the function expects 2"));
+    }
+
+    #[test]
+    fn test_too_many_input_columns_is_an_error() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1)])),
+                Arc::new(Int64Array::from(vec![Some(2)])),
+            ],
+        )
+        .unwrap();
+
+        let processor = UDFProcessor::new(&batch);
+        let result =
+            processor.process_unary::<i64, i64, _>(&output_field("out", DataType::Int64), |a| a);
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("2 input columns, but the function expects 1"));
     }
 
     #[test]

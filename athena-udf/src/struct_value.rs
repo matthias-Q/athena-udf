@@ -1,9 +1,9 @@
-//! Dynamic values for Arrow struct columns (Athena `ROW(...)` types).
+//! Dynamic values for Arrow struct and list columns (Athena `ROW(...)` and `ARRAY<T>` types).
 //!
-//! A struct column carries one named field set per row. [`StructValue`] holds
-//! those fields as an ordered list of [`ScalarValue`]s, so a UDF can read and
-//! build struct rows without a generated type per SQL `ROW` declaration.
-//!
+//! A struct column carries one named field set per row, and a list column
+//! carries a variable-length slice of elements per row. [`StructValue`] and
+//! [`ListValue`] hold [`ScalarValue`]s, so a UDF can read and build nested
+//! columns without a generated Rust type per SQL declaration.
 //! # Examples
 //!
 //! ```
@@ -13,7 +13,7 @@
 //! assert_eq!(row.get("name"), Some(&ScalarValue::String("athena".to_string())));
 //! ```
 
-use crate::arrow_conversions::{FromArrow, ToArrow};
+use crate::arrow_conversions::{check_bounds, FromArrow, ToArrow};
 use arrow::array::{
     as_boolean_array, as_generic_binary_array, as_list_array, as_primitive_array, as_string_array,
     as_struct_array, Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int32Array,
@@ -95,6 +95,12 @@ impl From<Vec<ScalarValue>> for ScalarValue {
     }
 }
 
+impl From<ListValue> for ScalarValue {
+    fn from(value: ListValue) -> Self {
+        Self::List(value.values)
+    }
+}
+
 /// A struct column value: an ordered list of named [`ScalarValue`]s.
 ///
 /// Field order follows the order the fields were added. Output columns are
@@ -134,6 +140,11 @@ impl StructValue {
         self.fields
             .iter()
             .find(|(field_name, _)| field_name == name)
+            .or_else(|| {
+                self.fields
+                    .iter()
+                    .find(|(field_name, _)| field_name.eq_ignore_ascii_case(name))
+            })
             .map(|(_, value)| value)
     }
 
@@ -187,6 +198,44 @@ impl From<Vec<ScalarValue>> for ListValue {
     }
 }
 
+impl<T: Into<ScalarValue>> FromIterator<T> for ListValue {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self {
+            values: iter.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl IntoIterator for ListValue {
+    type Item = ScalarValue;
+    type IntoIter = std::vec::IntoIter<ScalarValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ListValue {
+    type Item = &'a ScalarValue;
+    type IntoIter = std::slice::Iter<'a, ScalarValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter()
+    }
+}
+
+fn read_list(array: &ListArray, index: usize) -> Result<Vec<ScalarValue>, ArrowError> {
+    let elements = array.value(index);
+    let mut values = Vec::with_capacity(elements.len());
+    for position in 0..elements.len() {
+        let value = read_value(elements.as_ref(), position).map_err(|error| {
+            ArrowError::InvalidArgumentError(format!("list element {position}: {error}"))
+        })?;
+        values.push(value);
+    }
+    Ok(values)
+}
+
 /// Reads one value from any supported array type.
 fn read_value(array: &dyn Array, index: usize) -> Result<ScalarValue, ArrowError> {
     if array.is_null(index) {
@@ -214,16 +263,9 @@ fn read_value(array: &dyn Array, index: usize) -> Result<ScalarValue, ArrowError
             Some(value) => Ok(ScalarValue::Struct(value)),
             None => Ok(ScalarValue::Null),
         },
-        DataType::List(_) => {
-            let elements = as_list_array(array).value(index);
-            let mut values = Vec::with_capacity(elements.len());
-            for position in 0..elements.len() {
-                values.push(read_value(elements.as_ref(), position)?);
-            }
-            Ok(ScalarValue::List(values))
-        }
+        DataType::List(_) => Ok(ScalarValue::List(read_list(as_list_array(array), index)?)),
         other => Err(ArrowError::NotYetImplemented(format!(
-            "unsupported struct field type {other}"
+            "unsupported value type {other}"
         ))),
     }
 }
@@ -244,7 +286,7 @@ fn variant_name(value: &ScalarValue) -> &'static str {
 
 fn mismatch(expected: &str, value: &ScalarValue) -> ArrowError {
     ArrowError::InvalidArgumentError(format!(
-        "expected a {expected} struct field value, got {}",
+        "expected a {expected} value, got {}",
         variant_name(value)
     ))
 }
@@ -340,10 +382,10 @@ fn build_child(
                     Some(other) => Err(mismatch("List", other)),
                 })
                 .collect::<Result<_, _>>()?;
-            list_array(&rows, inner, field_type)
+            list_array(&rows, inner)
         }
         other => Err(ArrowError::NotYetImplemented(format!(
-            "unsupported struct field type {other}"
+            "unsupported value type {other}"
         ))),
     }
 }
@@ -358,6 +400,27 @@ fn struct_array(
             "declared output type {field_type} is not a struct"
         )));
     };
+
+    for row in rows.iter().flatten() {
+        for (index, (name, _)) in row.fields.iter().enumerate() {
+            if row.fields[..index]
+                .iter()
+                .any(|(earlier, _)| earlier.eq_ignore_ascii_case(name))
+            {
+                return Err(ArrowError::InvalidArgumentError(format!(
+                    "struct value has a duplicate field \"{name}\""
+                )));
+            }
+            if !fields
+                .iter()
+                .any(|declared| declared.name().eq_ignore_ascii_case(name))
+            {
+                return Err(ArrowError::InvalidArgumentError(format!(
+                    "struct value has an undeclared field \"{name}\""
+                )));
+            }
+        }
+    }
 
     let mut columns = Vec::with_capacity(fields.len());
     for field in fields.iter() {
@@ -397,14 +460,7 @@ fn missing_field(name: &str) -> ArrowError {
 fn list_array(
     rows: &[Option<&Vec<ScalarValue>>],
     inner: &Arc<Field>,
-    field_type: &DataType,
 ) -> Result<ArrayRef, ArrowError> {
-    if !matches!(field_type, DataType::List(_)) {
-        return Err(ArrowError::InvalidArgumentError(format!(
-            "declared output type {field_type} is not a list"
-        )));
-    }
-
     let mut elements: Vec<Option<&ScalarValue>> = Vec::new();
     let mut offsets = Vec::with_capacity(rows.len() + 1);
     offsets.push(0i32);
@@ -439,6 +495,7 @@ impl FromArrow for StructValue {
     type ArrayType = StructArray;
 
     fn from_array(array: &StructArray, index: usize) -> Result<Option<Self>, ArrowError> {
+        check_bounds(array.len(), index)?;
         if array.is_null(index) {
             return Ok(None);
         }
@@ -473,14 +530,14 @@ impl FromArrow for ListValue {
     type ArrayType = ListArray;
 
     fn from_array(array: &Self::ArrayType, index: usize) -> Result<Option<Self>, ArrowError> {
+        check_bounds(array.len(), index)?;
         if array.is_null(index) {
             return Ok(None);
         }
 
-        match read_value(array, index)? {
-            ScalarValue::List(values) => Ok(Some(Self { values })),
-            other => Err(mismatch("List", &other)),
-        }
+        Ok(Some(Self {
+            values: read_list(array, index)?,
+        }))
     }
 
     fn array_type() -> DataType {
@@ -499,7 +556,7 @@ impl ToArrow for ListValue {
             .iter()
             .map(|value| value.as_ref().map(|list| &list.values))
             .collect();
-        list_array(&rows, inner, field_type)
+        list_array(&rows, inner)
     }
 }
 
@@ -650,7 +707,7 @@ mod tests {
         )]);
 
         let error = StructValue::from_array(&array, 0).unwrap_err();
-        assert!(error.to_string().contains("unsupported struct field type"));
+        assert!(error.to_string().contains("unsupported value type Date32"));
     }
 
     fn list_of_rows_type() -> DataType {
@@ -725,10 +782,7 @@ mod tests {
         let inner_type = DataType::Struct(
             vec![Arc::new(Field::new("children", list_of_rows_type(), true))].into(),
         );
-        let row = StructValue::new([(
-            "children",
-            ScalarValue::List(quantities().values().to_vec()),
-        )]);
+        let row = StructValue::new([("children", quantities().into())]);
 
         let array = StructValue::to_array(vec![Some(row)], &inner_type).unwrap();
         let outer = as_struct_array(array.as_ref());
@@ -737,5 +791,54 @@ mod tests {
             panic!("expected a list field");
         };
         assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn case_insensitive_field_lookup_matches_athena_row_fields() {
+        let row = StructValue::new([
+            ("firstName", "athena".into()),
+            ("Size", ScalarValue::Int64(3)),
+        ]);
+        assert_eq!(
+            row.get("firstname"),
+            Some(&ScalarValue::String("athena".to_string()))
+        );
+
+        let lower_row_type = DataType::Struct(
+            vec![
+                Arc::new(Field::new("firstname", DataType::Utf8, true)),
+                Arc::new(Field::new("size", DataType::Int64, true)),
+            ]
+            .into(),
+        );
+        let array = StructValue::to_array(vec![Some(row)], &lower_row_type).unwrap();
+        assert_eq!(array.len(), 1);
+    }
+
+    #[test]
+    fn undeclared_and_duplicate_struct_fields_are_rejected() {
+        let extra = StructValue::new([
+            ("name", "athena".into()),
+            ("size", ScalarValue::Int64(3)),
+            ("extra", "ignored".into()),
+        ]);
+        let error = StructValue::to_array(vec![Some(extra)], &row_type()).unwrap_err();
+        assert!(error.to_string().contains("undeclared field \"extra\""));
+
+        let duplicate = StructValue::new([
+            ("name", "athena".into()),
+            ("name", "hermes".into()),
+            ("size", ScalarValue::Int64(3)),
+        ]);
+        let error = StructValue::to_array(vec![Some(duplicate)], &row_type()).unwrap_err();
+        assert!(error.to_string().contains("duplicate field \"name\""));
+    }
+
+    #[test]
+    fn list_value_collects_and_iterates() {
+        let list: ListValue = ["alpha", "beta"].into_iter().collect();
+        assert_eq!(list.values().len(), 2);
+        assert_eq!((&list).into_iter().count(), 2);
+        assert_eq!(list.into_iter().count(), 2);
     }
 }

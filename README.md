@@ -169,8 +169,10 @@ athena_udf_handler! {
 ```
 
 The output column is built from the `ROW` type that Athena declares, so field
-names and field types in the response always match the SQL signature. A struct
-value that is missing a declared field is rejected with an error.
+names and field types in the response always match the SQL signature. Field
+lookup is case-insensitive so it matches Athena's lowercased `ROW` field names.
+A struct value with a missing, undeclared, or duplicate field is rejected with
+an error.
 
 `ScalarValue` supports the same types as the table above, including nested
 structs and lists. `ScalarValue::Null` marks a null field inside a row.
@@ -190,13 +192,12 @@ pub fn units(text: String) -> ListValue {
     text.split_whitespace()
         .filter_map(|word| word.split_once('.'))
         .map(|(amount, unit)| {
-            ScalarValue::Struct(StructValue::new([
+            StructValue::new([
                 ("amount", amount.into()),
                 ("unit", unit.into()),
-            ]))
+            ])
         })
-        .collect::<Vec<_>>()
-        .into()
+        .collect()
 }
 ```
 

@@ -1,3 +1,4 @@
+use crate::response::{AthenaResponse, PingResponse};
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Field, Schema};
 use arrow::ipc::reader::StreamReader;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 pub struct PingRequest {
     #[serde(rename = "@type")]
     pub request_type: String,
+    #[serde(default)]
     pub identity: Identity,
     pub catalog_name: Option<String>,
     pub query_id: Option<String>,
@@ -30,6 +32,7 @@ pub struct PingRequest {
 pub struct AthenaUDFRequest {
     #[serde(rename = "@type")]
     pub request_type: String,
+    #[serde(default)]
     pub identity: Identity,
     pub input_records: InputRecords,
     #[serde(rename = "outputSchema")]
@@ -42,7 +45,7 @@ pub struct AthenaUDFRequest {
 ///
 /// This includes AWS account details, ARN, and other identifying information
 /// that can be used for authorization and auditing purposes.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
     pub id: Option<String>,
@@ -76,6 +79,47 @@ pub struct OutputSchemaWrapper {
     pub schema: Vec<u8>,
 }
 
+impl PingRequest {
+    /// Handles a ping request by creating an appropriate ping response.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use athena_udf::request::PingRequest;
+    /// # use athena_udf::response::AthenaResponse;
+    /// # use athena_udf::request::Identity;
+    /// let ping_request = PingRequest {
+    ///     request_type: "PingRequest".to_string(),
+    ///     identity: Identity {
+    ///         id: Some("test-id".to_string()),
+    ///         principal: None,
+    ///         account: Some("123456".to_string()),
+    ///         arn: None,
+    ///     },
+    ///     catalog_name: Some("test_catalog".to_string()),
+    ///     query_id: Some("query-123".to_string()),
+    /// };
+    ///
+    /// let response = ping_request.handle();
+    ///
+    /// match response {
+    ///     AthenaResponse::PingResponse(ping_resp) => {
+    ///         assert_eq!(ping_resp.capabilities, 23);
+    ///     }
+    ///     _ => panic!("Expected PingResponse"),
+    /// }
+    /// ```
+    pub fn handle(self) -> AthenaResponse {
+        AthenaResponse::PingResponse(PingResponse {
+            response_type: "PingResponse".to_string(),
+            catalog_name: self.catalog_name,
+            query_id: self.query_id,
+            source_type: "athena_udf_rust".to_string(),
+            capabilities: 23,
+            serde_version: Some(5),
+        })
+    }
+}
 impl AthenaUDFRequest {
     /// Reads and deserializes the input record batches from the request.
     ///
@@ -166,21 +210,37 @@ impl AthenaUDFRequest {
 
         let input_batches = self.read_input_batches()?;
         let output_schema = self.read_output_schema()?;
-        let output_field = output_schema
-            .fields()
-            .first()
-            .ok_or("The output schema has no fields")?;
+        let output_field = match output_schema.fields().len() {
+            0 => return Err("The output schema has no fields".into()),
+            1 => &output_schema.fields()[0],
+            count => {
+                return Err(format!(
+                    "The output schema has {count} fields, but scalar UDFs require 1"
+                )
+                .into())
+            }
+        };
 
-        let output_batches: Result<Vec<RecordBatch>, Error> = input_batches
-            .iter()
-            .map(|batch| processor(batch, &self.method_name, output_field))
-            .collect();
+        let mut output_batches = Vec::with_capacity(input_batches.len());
+        for batch in &input_batches {
+            let output_batch = processor(batch, &self.method_name, output_field)?;
+            if output_batch.num_rows() != batch.num_rows() {
+                return Err(format!(
+                    "UDF '{}' returned {} rows, but the input batch has {} rows",
+                    self.method_name,
+                    output_batch.num_rows(),
+                    batch.num_rows()
+                )
+                .into());
+            }
+            output_batches.push(output_batch);
+        }
 
         let response = crate::response::AthenaUDFResponse::from_batches(
             self.method_name.clone(),
             self.input_records.a_id.clone(),
             &output_schema,
-            output_batches?,
+            output_batches,
         )?;
 
         Ok(crate::response::AthenaResponse::UserDefinedFunctionResponse(response))

@@ -41,6 +41,24 @@ pub(crate) fn encode_stream(
 
     let mut records_buffer = Vec::new();
     for batch in batches {
+        if batch.num_columns() != schema.fields().len() {
+            return Err(ArrowError::InvalidArgumentError(format!(
+                "Record batch has {} columns, but the schema expects {}",
+                batch.num_columns(),
+                schema.fields().len()
+            )));
+        }
+        for (index, (field, column)) in schema.fields().iter().zip(batch.columns()).enumerate() {
+            if column.data_type() != field.data_type() {
+                return Err(ArrowError::InvalidArgumentError(format!(
+                    "Record batch column {} (\"{}\") has type {}, but the schema expects {}",
+                    index,
+                    field.name(),
+                    column.data_type(),
+                    field.data_type()
+                )));
+            }
+        }
         let (encoded_dictionaries, encoded_batch) =
             generator.encode(batch, &mut dictionary_tracker, &options, &mut context)?;
 
@@ -265,5 +283,18 @@ mod tests {
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 3);
         assert_eq!(batches[0].schema(), schema);
+    }
+
+    #[test]
+    fn test_encode_stream_rejects_mismatched_batch_schema() {
+        let declared = Schema::new(vec![Field::new("out", DataType::Float64, true)]);
+        let batch_schema = Arc::new(Schema::new(vec![Field::new("out", DataType::Int32, true)]));
+        let batch =
+            RecordBatch::try_new(batch_schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+
+        let error = encode_stream(&declared, &[batch]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("has type Int32, but the schema expects Float64"));
     }
 }

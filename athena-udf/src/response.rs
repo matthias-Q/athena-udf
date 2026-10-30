@@ -1,7 +1,7 @@
-use crate::request::PingRequest;
 use crate::serialization::encode_stream;
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
+use base64::{engine::general_purpose, Engine as _};
 use lambda_runtime::Error;
 use serde::Serialize;
 use serde_json::Value;
@@ -44,16 +44,16 @@ pub enum AthenaResponse {
 #[derive(Debug, Serialize)]
 pub struct PingResponse {
     #[serde(rename = "@type")]
-    response_type: String,
+    pub response_type: String,
     #[serde(rename = "catalogName")]
-    catalog_name: Option<String>,
+    pub catalog_name: Option<String>,
     #[serde(rename = "queryId")]
-    query_id: Option<String>,
+    pub query_id: Option<String>,
     #[serde(rename = "sourceType")]
-    source_type: String,
-    capabilities: u64,
+    pub source_type: String,
+    pub capabilities: u64,
     #[serde(rename = "serdeVersion", skip_serializing_if = "Option::is_none")]
-    serde_version: Option<u64>,
+    pub serde_version: Option<u64>,
 }
 
 /// Response containing the results of a User Defined Function execution.
@@ -81,48 +81,6 @@ pub struct OutputRecords {
     pub schema: Vec<u8>,
     #[serde(with = "crate::serde_base64")]
     pub records: Vec<u8>,
-}
-
-impl PingRequest {
-    /// Handles a ping request by creating an appropriate ping response.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use athena_udf::request::PingRequest;
-    /// # use athena_udf::response::AthenaResponse;
-    /// # use athena_udf::request::Identity;
-    /// let ping_request = PingRequest {
-    ///     request_type: "PingRequest".to_string(),
-    ///     identity: Identity {
-    ///         id: Some("test-id".to_string()),
-    ///         principal: None,
-    ///         account: Some("123456".to_string()),
-    ///         arn: None,
-    ///     },
-    ///     catalog_name: Some("test_catalog".to_string()),
-    ///     query_id: Some("query-123".to_string()),
-    /// };
-    ///
-    /// let response = ping_request.handle();
-    ///
-    /// match response {
-    ///     AthenaResponse::PingResponse(ping_resp) => {
-    ///         // successful ping response
-    ///     }
-    ///     _ => panic!("Expected PingResponse"),
-    /// }
-    /// ```
-    pub fn handle(self) -> AthenaResponse {
-        AthenaResponse::PingResponse(PingResponse {
-            response_type: "PingResponse".to_string(),
-            catalog_name: self.catalog_name,
-            query_id: self.query_id,
-            source_type: "athena_udf_rust".to_string(),
-            capabilities: 23,
-            serde_version: Some(5),
-        })
-    }
 }
 
 impl AthenaUDFResponse {
@@ -260,7 +218,17 @@ impl AthenaResponse {
     /// ```
     pub fn parse_request(payload: Value) -> Result<(Value, bool), Error> {
         if let Some(body) = payload.get("body").and_then(|v| v.as_str()) {
-            Ok((serde_json::from_str(body)?, true))
+            let is_base64 = payload
+                .get("isBase64Encoded")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let parsed = if is_base64 {
+                let decoded = general_purpose::STANDARD.decode(body)?;
+                serde_json::from_slice(&decoded)?
+            } else {
+                serde_json::from_str(body)?
+            };
+            Ok((parsed, true))
         } else {
             Ok((payload, false))
         }
@@ -329,7 +297,7 @@ impl AthenaResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::Identity;
+    use crate::request::{Identity, PingRequest};
     use arrow::array::Int32Array;
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -418,6 +386,23 @@ mod tests {
         assert!(result.is_ok());
 
         let (parsed, is_http) = result.unwrap();
+        assert!(is_http);
+        assert_eq!(parsed.get("@type").unwrap(), "PingRequest");
+    }
+
+    #[test]
+    fn test_parse_request_http_base64_wrapped() {
+        let inner = serde_json::json!({
+            "@type": "PingRequest",
+            "identity": {},
+        });
+        let encoded = general_purpose::STANDARD.encode(serde_json::to_vec(&inner).unwrap());
+        let payload = serde_json::json!({
+            "body": encoded,
+            "isBase64Encoded": true,
+        });
+
+        let (parsed, is_http) = AthenaResponse::parse_request(payload).unwrap();
         assert!(is_http);
         assert_eq!(parsed.get("@type").unwrap(), "PingRequest");
     }

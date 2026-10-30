@@ -1,6 +1,6 @@
 //! End-to-end tests for the Athena request and response protocol.
 
-use arrow::array::{Array, Int64Array, StringArray, StructArray};
+use arrow::array::{Array, Int64Array, ListArray, StringArray, StructArray};
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
@@ -307,6 +307,107 @@ async fn empty_output_schema_is_an_error() {
 
     let error = result.unwrap_err().to_string();
     assert!(error.contains("output schema has no fields"));
+}
+
+#[tokio::test]
+async fn list_of_structs_round_trip() {
+    let (input_schema, records) = string_input(vec![Some("10.kg 5.l"), None]);
+    let row_fields = Fields::from(vec![
+        Field::new("amount", DataType::Utf8, true),
+        Field::new("unit", DataType::Utf8, true),
+    ]);
+    let output_schema = Schema::new(vec![Field::new(
+        "result",
+        DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Struct(row_fields),
+            true,
+        ))),
+        true,
+    )]);
+
+    let value = handle_athena_request(
+        event(request(
+            &input_schema,
+            &records,
+            &output_schema,
+            "units",
+            "SCALAR",
+        )),
+        |batch, _, output_field| {
+            UDFProcessor::new(batch).process_unary::<String, ListValue, _>(output_field, |text| {
+                text.split_whitespace()
+                    .filter_map(|word| word.split_once('.'))
+                    .map(|(amount, unit)| {
+                        StructValue::new([("amount", amount.into()), ("unit", unit.into())])
+                    })
+                    .collect()
+            })
+        },
+    )
+    .await
+    .unwrap();
+
+    let batches = read_response_batches(&value);
+    let list = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .unwrap();
+    assert_eq!(list.len(), 2);
+    assert_eq!(list.value_length(0), 2);
+    assert!(list.is_null(1));
+}
+
+#[tokio::test]
+async fn multi_field_output_schema_is_an_error() {
+    let (input_schema, records) = string_input(vec![Some("x")]);
+    let output_schema = Schema::new(vec![
+        Field::new("a", DataType::Utf8, true),
+        Field::new("b", DataType::Utf8, true),
+    ]);
+
+    let result = handle_athena_request(
+        event(request(
+            &input_schema,
+            &records,
+            &output_schema,
+            "identity",
+            "SCALAR",
+        )),
+        |_, _, _| unreachable!(),
+    )
+    .await;
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("output schema has 2 fields"));
+}
+
+#[tokio::test]
+async fn output_row_count_mismatch_is_an_error() {
+    let (input_schema, records) = string_input(vec![Some("x"), Some("y")]);
+    let output_schema = Schema::new(vec![Field::new("result", DataType::Utf8, true)]);
+
+    let result = handle_athena_request(
+        event(request(
+            &input_schema,
+            &records,
+            &output_schema,
+            "short",
+            "SCALAR",
+        )),
+        |_, _, output_field| {
+            let schema = Arc::new(Schema::new(vec![output_field.clone()]));
+            Ok(RecordBatch::try_new(
+                schema,
+                vec![Arc::new(StringArray::from(vec![Some("only-one")]))],
+            )?)
+        },
+    )
+    .await;
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("returned 1 rows, but the input batch has 2 rows"));
 }
 
 #[tokio::test]
